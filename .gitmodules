@@ -1,15 +1,15 @@
 [submodule "riscv-tests"]
 	path = riscv-tests
-	url = https://github.com/riscv/riscv-tests.git
-	branch = master
+	url = git@github.com:davidschrammel/riscv-tests.git
+	branch = donky
 [submodule "riscv-pk"]
 	path = riscv-pk
-	url = https://github.com/pulp-platform/riscv-pk.git
-	branch = master
+	url = git@github.com:davidschrammel/riscv-pk.git
+	branch = donky
 [submodule "riscv-isa-sim"]
 	path = riscv-isa-sim
-	url = https://github.com/riscv/riscv-isa-sim.git
-	branch = master
+	url = git@github.com:davidschrammel/riscv-isa-sim.git
+	branch = donky
 [submodule "riscv-gnu-toolchain"]
 	path = riscv-gnu-toolchain
 	url = https://github.com/riscv/riscv-gnu-toolchain.git
@@ -24,3 +24,6 @@
 [submodule "vitetris"]
 	path = vitetris
 	url = https://github.com/pulp-platform/vitetris.git
+[submodule "riscv-openocd"]
+	path = riscv-openocd
+	url = https://github.com/riscv/riscv-openocd

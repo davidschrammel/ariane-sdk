@@ -53,7 +53,8 @@ The bootloader of ariane requires a GPT partition table so you first have to cre
 
 ```bash
 $ sudo fdisk -l # search for the corresponding disk label (e.g. /dev/sdb)
-$ sudo sgdisk --clear --new=1:2048:67583 --new=2 --typecode=1:3000 --typecode=2:8300 /dev/sdb # create a new gpt partition table and two partitions: 1st partition: 32mb (ONIE boot), second partition: rest (Linux root)
+$ sudo sgdisk --clear --new=1:2048:128M --new=2 --typecode=1:3000 --typecode=2:8300 /dev/disk/by-id/YOUR_DISK_ID_HERE # create a new gpt partition table and two partitions: 1st partition: 128MB (ONIE boot), second partition: rest
+$ sudo mkfs.ext4 /dev/disk/by-id/YOUR_DISK_ID_HERE-part2 # format second partition
 ```
 
 Now you have to compile the linux kernel:

@@ -1,0 +1,20 @@
+diff --git a/include/opcode/riscv-opc.h b/include/opcode/riscv-opc.h
+index 60bd2f999e..b193d79e47 100644
+--- a/include/opcode/riscv-opc.h
++++ b/include/opcode/riscv-opc.h
+@@ -581,6 +581,7 @@
+ #define CSR_UCAUSE 0x42
+ #define CSR_UTVAL 0x43
+ #define CSR_UIP 0x44
++#define CSR_UMPK 0x46
+ #define CSR_FFLAGS 0x1
+ #define CSR_FRM 0x2
+ #define CSR_FCSR 0x3
+@@ -1118,6 +1119,7 @@ DECLARE_CSR(ustatus, CSR_USTATUS)
+ DECLARE_CSR(uie, CSR_UIE)
+ DECLARE_CSR(utvec, CSR_UTVEC)
+ DECLARE_CSR(uscratch, CSR_USCRATCH)
++DECLARE_CSR(umpk, CSR_UMPK)
+ DECLARE_CSR(uepc, CSR_UEPC)
+ DECLARE_CSR(ucause, CSR_UCAUSE)
+ DECLARE_CSR(utval, CSR_UTVAL)

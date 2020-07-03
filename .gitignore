@@ -10,3 +10,7 @@ riscv-fesvr/build
 riscv-isa-sim/build
 riscv-pk/build
 riscv-tests/build
+
+rootfs/*.elf
+core
+

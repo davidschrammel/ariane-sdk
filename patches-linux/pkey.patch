@@ -1,0 +1,1190 @@
+diff --git linux-ariane-v0.7/arch/riscv/Kconfig linux-ariane-v0.7/arch/riscv/Kconfig
+index eb56c82d8aa1..0ae550241443 100644
+--- linux-ariane-v0.7/arch/riscv/Kconfig
++++ linux-ariane-v0.7/arch/riscv/Kconfig
+@@ -282,3 +282,14 @@ menu "Power management options"
+ source "kernel/power/Kconfig"
+ 
+ endmenu
++
++menu "Custom"
++
++config RISCV_CUSTOM_PROTECTION_KEYS
++	prompt "Custom Risc-V protection keys"
++	def_bool y
++	depends on 64BIT
++	select ARCH_USES_HIGH_VMA_FLAGS
++	select ARCH_HAS_PKEYS
++
++endmenu
+diff --git linux-ariane-v0.7/arch/riscv/include/asm/csr.h linux-ariane-v0.7/arch/riscv/include/asm/csr.h
+index 28a0d1cb374c..803652f797a5 100644
+--- linux-ariane-v0.7/arch/riscv/include/asm/csr.h
++++ linux-ariane-v0.7/arch/riscv/include/asm/csr.h
+@@ -66,6 +66,8 @@
+ #define EXC_LOAD_PAGE_FAULT     13
+ #define EXC_STORE_PAGE_FAULT    15
+ 
++#define CSR_UMPK 0x46
++
+ #ifndef __ASSEMBLY__
+ 
+ #define csr_swap(csr, val)					\
+@@ -86,6 +88,16 @@
+ 	__v;							\
+ })
+ 
++#define csr_read2(csr)						\
++({								\
++	register unsigned long __v;				\
++	__asm__ __volatile__ ("csrr %0, %1"		\
++			      : "=r" (__v) : "i"(csr)	\
++			      : "memory");			\
++	__v;							\
++})
++
++
+ #define csr_write(csr, val)					\
+ ({								\
+ 	unsigned long __v = (unsigned long)(val);		\
+@@ -94,6 +106,14 @@
+ 			      : "memory");			\
+ })
+ 
++#define csr_write2(csr, val)					\
++({								\
++	unsigned long __v = (unsigned long)(val);		\
++	__asm__ __volatile__ ("csrw %0, %1"		\
++			      : : "i"(csr), "rK" (__v)			\
++			      : "memory");			\
++})
++
+ #define csr_read_set(csr, val)					\
+ ({								\
+ 	unsigned long __v = (unsigned long)(val);		\
+diff --git linux-ariane-v0.7/arch/riscv/include/asm/mman.h linux-ariane-v0.7/arch/riscv/include/asm/mman.h
+new file mode 100644
+index 000000000000..269ef0eec8c8
+--- /dev/null
++++ linux-ariane-v0.7/arch/riscv/include/asm/mman.h
+@@ -0,0 +1,26 @@
++
++#ifndef _ASM_RISCV_MMAN_H
++#define _ASM_RISCV_MMAN_H
++
++#include <uapi/asm/mman.h>
++
++#include <linux/mm.h>
++#include <linux/pkeys.h>
++#include <asm/pgtable.h>
++
++#ifdef CONFIG_RISCV_CUSTOM_PROTECTION_KEYS
++/*
++ * Take the protection key bits out of the vma->vm_flags
++ * value and turn them in to the bits that we can put in
++ * to a pte.
++ *
++ * Only override these if Protection Keys are available
++ * (which is only on 64-bit).
++ */
++#define arch_vm_get_page_prot(vm_flags)	__pgprot(vmflags_to_pkey_bits(vm_flags) << _PAGE_PKEY_SHIFT)
++
++#define arch_calc_vm_prot_bits(prot, pkey) pkey_to_vmflag_bits(pkey)
++
++#endif /* CONFIG_RISCV_CUSTOM_PROTECTION_KEYS */
++
++#endif	/* _ASM_RISCV_MMAN_H */
+diff --git linux-ariane-v0.7/arch/riscv/include/asm/mmu.h linux-ariane-v0.7/arch/riscv/include/asm/mmu.h
+index 5df2dccdba12..eef0381c947c 100644
+--- linux-ariane-v0.7/arch/riscv/include/asm/mmu.h
++++ linux-ariane-v0.7/arch/riscv/include/asm/mmu.h
+@@ -23,6 +23,11 @@ typedef struct {
+ 	/* A local icache flush is needed before user execution can resume. */
+ 	cpumask_t icache_stale_mask;
+ #endif
++
++#ifdef CONFIG_RISCV_CUSTOM_PROTECTION_KEYS
++	u16 pkey_allocated_last;
++#endif
++
+ } mm_context_t;
+ 
+ #endif /* __ASSEMBLY__ */
+diff --git linux-ariane-v0.7/arch/riscv/include/asm/mmu_context.h linux-ariane-v0.7/arch/riscv/include/asm/mmu_context.h
+index 336d60ec5698..3c88184d6037 100644
+--- linux-ariane-v0.7/arch/riscv/include/asm/mmu_context.h
++++ linux-ariane-v0.7/arch/riscv/include/asm/mmu_context.h
+@@ -16,7 +16,7 @@
+ #define _ASM_RISCV_MMU_CONTEXT_H
+ 
+ #include <linux/mm_types.h>
+-#include <asm-generic/mm_hooks.h>
++#include <linux/pkeys.h>
+ 
+ #include <linux/mm.h>
+ #include <linux/sched.h>
+@@ -32,6 +32,10 @@ static inline void enter_lazy_tlb(struct mm_struct *mm,
+ static inline int init_new_context(struct task_struct *task,
+ 	struct mm_struct *mm)
+ {
++#ifdef CONFIG_RISCV_CUSTOM_PROTECTION_KEYS
++	mm->context.pkey_allocated_last = 0;
++#endif
++
+ 	return 0;
+ }
+ 
+@@ -106,4 +110,69 @@ static inline void deactivate_mm(struct task_struct *task,
+ {
+ }
+ 
++//------------------------------------------------------------------------------
++//These need to be "implemented" because we don't use mm_hooks.h
++static inline int arch_dup_mmap(struct mm_struct *oldmm,
++				struct mm_struct *mm)
++{
++	return 0;
++}
++
++static inline void arch_exit_mmap(struct mm_struct *mm)
++{
++}
++
++static inline void arch_unmap(struct mm_struct *mm,
++			struct vm_area_struct *vma,
++			unsigned long start, unsigned long end)
++{
++}
++
++static inline void arch_bprm_mm_init(struct mm_struct *mm,
++				     struct vm_area_struct *vma)
++{
++}
++//------------------------------------------------------------------------------
++/*
++ * We only want to enforce protection keys on the current process
++ * because we effectively have no access to PKRU for other
++ * processes or any way to tell *which * PKRU in a threaded
++ * process we could use.
++ *
++ * So do not enforce things if the VMA is not from the current
++ * mm, or if we are in a kernel thread.
++ */
++static inline bool vma_is_foreign(struct vm_area_struct *vma)
++{
++	if (!current->mm)
++		return true;
++	/*
++	 * Should PKRU be enforced on the access to this VMA?  If
++	 * the VMA is from another process, then PKRU has no
++	 * relevance and should not be enforced.
++	 */
++	if (current->mm != vma->vm_mm)
++		return true;
++
++	return false;
++}
++
++static inline bool arch_vma_access_permitted(struct vm_area_struct *vma,
++		bool write, bool execute, bool foreign)
++{
++	bool pkru_allows_pkey;
++
++	///* pkeys never affect instruction fetches */
++	//if (execute){
++	//	return true;
++	//}
++	/* allow access if the VMA is not one from this process */
++	if (foreign || vma_is_foreign(vma)){
++		return true;
++	}
++
++	pkru_allows_pkey = __pkru_allows_pkey(vma_pkey(vma), write);
++	return pkru_allows_pkey;
++}
++
+ #endif /* _ASM_RISCV_MMU_CONTEXT_H */
+diff --git linux-ariane-v0.7/arch/riscv/include/asm/pgtable-64.h linux-ariane-v0.7/arch/riscv/include/asm/pgtable-64.h
+index 7aa0ea9bd8bb..d8073c8bb7a7 100644
+--- linux-ariane-v0.7/arch/riscv/include/asm/pgtable-64.h
++++ linux-ariane-v0.7/arch/riscv/include/asm/pgtable-64.h
+@@ -63,7 +63,7 @@ static inline void pud_clear(pud_t *pudp)
+ 
+ static inline unsigned long pud_page_vaddr(pud_t pud)
+ {
+-	return (unsigned long)pfn_to_virt(pud_val(pud) >> _PAGE_PFN_SHIFT);
++	return (unsigned long)pfn_to_virt((pud_val(pud) & _PAGE_PFN_MASK) >> _PAGE_PFN_SHIFT);
+ }
+ 
+ #define pmd_index(addr) (((addr) >> PMD_SHIFT) & (PTRS_PER_PMD - 1))
+diff --git linux-ariane-v0.7/arch/riscv/include/asm/pgtable-bits.h linux-ariane-v0.7/arch/riscv/include/asm/pgtable-bits.h
+index 470755cb7558..4fb716de8425 100644
+--- linux-ariane-v0.7/arch/riscv/include/asm/pgtable-bits.h
++++ linux-ariane-v0.7/arch/riscv/include/asm/pgtable-bits.h
+@@ -18,6 +18,11 @@
+  * PTE format:
+  * | XLEN-1  10 | 9             8 | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0
+  *       PFN      reserved for SW   D   A   G   U   X   W   R   V
++ * 
++ * PTE format: (with protection keys)
++ * | XLEN-1  54 | 53  28 | 27  19 | 18  10 | 9             8 | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0
++ * | PKEY       | PPN[2]   PPN[1]   PPN[0] | reserved for SW   D   A   G   U   X   W   R   V
++ *              |          = PFN           |
+  */
+ 
+ #define _PAGE_ACCESSED_OFFSET 6
+@@ -42,10 +47,57 @@
+ #define _PAGE_PROT_NONE _PAGE_READ
+ 
+ #define _PAGE_PFN_SHIFT 10
++#ifdef CONFIG_RISCV_CUSTOM_PROTECTION_KEYS
++#define _PAGE_PFN_MASK ( 0x003FFFFFFFFFFC00ULL ) /* = set bits 53..10 = 2^54-2^10 = ~0 ^ _PAGE_PKEY_MASK*/
++#else
++#define _PAGE_PFN_MASK ( ~((u64)0) )
++#endif  /* CONFIG_RISCV_CUSTOM_PROTECTION_KEYS */
++
++#ifdef CONFIG_RISCV_CUSTOM_PROTECTION_KEYS
++
++#define _PAGE_PKEY_SHIFT 54
++
++#define _PAGE_PKEY_BIT0 ( (u64)1 << (_PAGE_PKEY_SHIFT+0) )
++#define _PAGE_PKEY_BIT1 ( (u64)1 << (_PAGE_PKEY_SHIFT+1) )
++#define _PAGE_PKEY_BIT2 ( (u64)1 << (_PAGE_PKEY_SHIFT+2) )
++#define _PAGE_PKEY_BIT3 ( (u64)1 << (_PAGE_PKEY_SHIFT+3) )
++#define _PAGE_PKEY_BIT4 ( (u64)1 << (_PAGE_PKEY_SHIFT+4) )
++#define _PAGE_PKEY_BIT5 ( (u64)1 << (_PAGE_PKEY_SHIFT+5) )
++#define _PAGE_PKEY_BIT6 ( (u64)1 << (_PAGE_PKEY_SHIFT+6) )
++#define _PAGE_PKEY_BIT7 ( (u64)1 << (_PAGE_PKEY_SHIFT+7) )
++#define _PAGE_PKEY_BIT8 ( (u64)1 << (_PAGE_PKEY_SHIFT+8) )
++#define _PAGE_PKEY_BIT9 ( (u64)1 << (_PAGE_PKEY_SHIFT+9) )
++
++#else
++
++#define _PAGE_PKEY_BIT0 (0)
++#define _PAGE_PKEY_BIT1 (0)
++#define _PAGE_PKEY_BIT2 (0)
++#define _PAGE_PKEY_BIT3 (0)
++#define _PAGE_PKEY_BIT4 (0)
++#define _PAGE_PKEY_BIT5 (0)
++#define _PAGE_PKEY_BIT6 (0)
++#define _PAGE_PKEY_BIT7 (0)
++#define _PAGE_PKEY_BIT8 (0)
++#define _PAGE_PKEY_BIT9 (0)
++
++#endif /* CONFIG_RISCV_CUSTOM_PROTECTION_KEYS */
++
++#define _PAGE_PKEY_MASK ( \
++	_PAGE_PKEY_BIT0 | \
++	_PAGE_PKEY_BIT1 | \
++	_PAGE_PKEY_BIT2 | \
++	_PAGE_PKEY_BIT3 | \
++	_PAGE_PKEY_BIT4 | \
++	_PAGE_PKEY_BIT5 | \
++	_PAGE_PKEY_BIT6 | \
++	_PAGE_PKEY_BIT7 | \
++	_PAGE_PKEY_BIT8 | \
++	_PAGE_PKEY_BIT9 )
+ 
+ /* Set of bits to preserve across pte_modify() */
+ #define _PAGE_CHG_MASK  (~(unsigned long)(_PAGE_PRESENT | _PAGE_READ |	\
+ 					  _PAGE_WRITE | _PAGE_EXEC |	\
+-					  _PAGE_USER | _PAGE_GLOBAL))
++					  _PAGE_USER | _PAGE_GLOBAL | _PAGE_PKEY_MASK))
+ 
+ #endif /* _ASM_RISCV_PGTABLE_BITS_H */
+diff --git linux-ariane-v0.7/arch/riscv/include/asm/pgtable.h linux-ariane-v0.7/arch/riscv/include/asm/pgtable.h
+index 1141364d990e..c37640d00b1f 100644
+--- linux-ariane-v0.7/arch/riscv/include/asm/pgtable.h
++++ linux-ariane-v0.7/arch/riscv/include/asm/pgtable.h
+@@ -23,6 +23,10 @@
+ /* Page Upper Directory not used in RISC-V */
+ #include <asm-generic/pgtable-nopud.h>
+ #include <asm/page.h>
++
++#include <asm/csr.h>
++#include <asm/pkeys-defines.h>
++
+ #include <asm/tlbflush.h>
+ #include <linux/mm_types.h>
+ 
+@@ -121,10 +125,21 @@ static inline void pmd_clear(pmd_t *pmdp)
+ 	set_pmd(pmdp, __pmd(0));
+ }
+ 
++// PFN to P**
++static inline unsigned long pfn_pxx(unsigned long pfn, pgprot_t prot)
++{
++	return ((pfn << _PAGE_PFN_SHIFT) | pgprot_val(prot));
++}
++// P** to PFN
++static inline unsigned long pxx_pfn(unsigned long val)
++{
++	return (val & _PAGE_PFN_MASK) >> _PAGE_PFN_SHIFT;
++}
++
+ 
+ static inline pgd_t pfn_pgd(unsigned long pfn, pgprot_t prot)
+ {
+-	return __pgd((pfn << _PAGE_PFN_SHIFT) | pgprot_val(prot));
++	return __pgd(pfn_pxx(pfn, prot));
+ }
+ 
+ #define pgd_index(addr) (((addr) >> PGDIR_SHIFT) & (PTRS_PER_PGD - 1))
+@@ -139,18 +154,18 @@ static inline pgd_t *pgd_offset(const struct mm_struct *mm, unsigned long addr)
+ 
+ static inline struct page *pmd_page(pmd_t pmd)
+ {
+-	return pfn_to_page(pmd_val(pmd) >> _PAGE_PFN_SHIFT);
++	return pfn_to_page(pxx_pfn(pmd_val(pmd)));
+ }
+ 
+ static inline unsigned long pmd_page_vaddr(pmd_t pmd)
+ {
+-	return (unsigned long)pfn_to_virt(pmd_val(pmd) >> _PAGE_PFN_SHIFT);
++	return (unsigned long)pfn_to_virt(pxx_pfn(pmd_val(pmd)));
+ }
+ 
+ /* Yields the page frame number (PFN) of a page table entry */
+ static inline unsigned long pte_pfn(pte_t pte)
+ {
+-	return (pte_val(pte) >> _PAGE_PFN_SHIFT);
++	return (pxx_pfn(pte_val(pte)));
+ }
+ 
+ #define pte_page(x)     pfn_to_page(pte_pfn(x))
+@@ -158,7 +173,7 @@ static inline unsigned long pte_pfn(pte_t pte)
+ /* Constructs a page table entry */
+ static inline pte_t pfn_pte(unsigned long pfn, pgprot_t prot)
+ {
+-	return __pte((pfn << _PAGE_PFN_SHIFT) | pgprot_val(prot));
++	return __pte(pfn_pxx(pfn, prot));
+ }
+ 
+ static inline pte_t mk_pte(struct page *page, pgprot_t prot)
+@@ -303,8 +318,9 @@ void flush_icache_pte(pte_t pte);
+ static inline void set_pte_at(struct mm_struct *mm,
+ 	unsigned long addr, pte_t *ptep, pte_t pteval)
+ {
+-	if (pte_present(pteval) && pte_exec(pteval))
++	if (pte_present(pteval) && pte_exec(pteval)){
+ 		flush_icache_pte(pteval);
++	}
+ 
+ 	set_pte(ptep, pteval);
+ }
+@@ -426,6 +442,126 @@ static inline void pgtable_cache_init(void)
+ #define TASK_SIZE VMALLOC_START
+ #endif
+ 
++//---------------------------------------------------------------------
++#ifdef CONFIG_RISCV_CUSTOM_PROTECTION_KEYS
++static inline u64 __read_pkru(void)
++{
++	return csr_read2(CSR_UMPK);
++}
++
++static inline void __write_pkru(u64 pkru)
++{
++	csr_write2(CSR_UMPK, pkru);
++
++}
++#else
++static inline u64 __read_pkru(void)
++{
++	return 0;
++}
++
++static inline void __write_pkru(u64 pkru)
++{
++}
++#endif
++
++extern bool has_protection_keys; //TODO maybe arch_pkeys_enabled
++
++static inline u64 read_pkru(void)
++{
++	if (has_protection_keys)
++		return __read_pkru();
++	return 0;
++}
++
++static inline void write_pkru(u64 pkru)
++{
++	if (has_protection_keys)
++		__write_pkru(pkru);
++}
++//---------------------------------------------------------------------
++static inline bool __pkru_allows_read(u64 pkru, u16 pkey)
++{
++	pkru_t reg = INT_TO_PKRU(pkru);
++
++	if (reg.mode == 1)
++		return true;
++	//TODO maybe more efficient with explicit bit shifting?
++	if (reg.slot_0_mpkey == pkey)
++		return true;
++	if (reg.slot_1_mpkey == pkey)
++		return true;
++	if (reg.slot_2_mpkey == pkey)
++		return true;
++	if (reg.slot_3_mpkey == pkey)
++		return true;
++	return false;
++}
++
++static inline bool __pkru_allows_write(u64 pkru, u16 pkey)
++{
++	pkru_t reg = INT_TO_PKRU(pkru);
++
++	if (reg.mode == 1)
++		return true;
++	if (reg.slot_0_mpkey == pkey && !reg.slot_0_wd)
++		return true;
++	if (reg.slot_1_mpkey == pkey && !reg.slot_1_wd)
++		return true;
++	if (reg.slot_2_mpkey == pkey && !reg.slot_2_wd)
++		return true;
++	if (reg.slot_3_mpkey == pkey && !reg.slot_3_wd)
++		return true;
++	return false;
++}
++//---------------------------------------------------------------------
++static inline u16 pte_flags_pkey(unsigned long pte_flags)
++{
++#ifdef CONFIG_RISCV_CUSTOM_PROTECTION_KEYS
++	return (pte_flags & _PAGE_PKEY_MASK) >> _PAGE_PKEY_SHIFT;
++#else
++	return 0;
++#endif
++}
++//---------------------------------------------------------------------
++static inline bool __pkru_allows_pkey(u16 pkey, bool write)
++{
++	/*
++	u64 pkru;
++	*/
++
++	//returning true, because these checks are done in userspace
++	return true;
++
++	/*
++	if(!has_protection_keys){
++		return true;
++	}
++
++	if (pkey == 0)
++		return true;
++
++	pkru = read_pkru();
++
++	if (!__pkru_allows_read(pkru, pkey))
++		return false;
++	if (write && !__pkru_allows_write(pkru, pkey))
++		return false;
++
++	return true;
++	*/
++}
++
++//Note: _PAGE_USER is in the same position for all levels
++#define pte_access_permitted(pte, write) (pte_present(pte) && (pte_val(pte) & _PAGE_USER) && (!(write) || pte_write(pte)) && __pkru_allows_pkey(pte_flags_pkey(pte_val(pte)), write))
++#define pmd_access_permitted(pmd, write) (pmd_present(pmd) && (pmd_val(pte) & _PAGE_USER) && (!(write) || pmd_write(pmd)) && __pkru_allows_pkey(pte_flags_pkey(pmd_val(pte)), write))
++#define pud_access_permitted(pud, write) (pud_present(pud) && (pud_val(pte) & _PAGE_USER) && (!(write) || pud_write(pud)) && __pkru_allows_pkey(pte_flags_pkey(pud_val(pte)), write))
++//#define p4d_access_permitted(p4d, write) ...
++//#define pgd_access_permitted(pgd, write) ...
++
++//---------------------------------------------------------------------
++
++
+ #include <asm-generic/pgtable.h>
+ 
+ #endif /* !__ASSEMBLY__ */
+diff --git linux-ariane-v0.7/arch/riscv/include/asm/pkeys-defines.h linux-ariane-v0.7/arch/riscv/include/asm/pkeys-defines.h
+new file mode 100644
+index 000000000000..5ebc9eeaf049
+--- /dev/null
++++ linux-ariane-v0.7/arch/riscv/include/asm/pkeys-defines.h
+@@ -0,0 +1,27 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _ASM_RISCV_PKEYS_DEFINES_H
++#define _ASM_RISCV_PKEYS_DEFINES_H
++
++typedef struct __attribute__((__packed__)) {
++    uint slot_0_mpkey : 10;
++    uint slot_0_wd    :  1;
++    uint slot_1_mpkey : 10;
++    uint slot_1_wd    :  1;
++    uint slot_2_mpkey : 10;
++    uint slot_2_wd    :  1;
++    uint slot_3_mpkey : 10;
++    uint slot_3_wd    :  1;
++    uint sw_did       :  8;
++    uint sw_unused    : 11;
++    uint mode         :  1;
++} pkru_t;
++
++typedef union{
++    pkru_t pkru;
++    u64 pkru_as_int;
++} union_pkru_t;
++
++#define PKRU_TO_INT(pkru_value) ({union_pkru_t u; u.pkru = pkru_value; u.pkru_as_int;}) // GCC statement expression
++#define INT_TO_PKRU(value) ({union_pkru_t u; u.pkru_as_int = value; u.pkru;}) // GCC statement expression
++
++#endif /*_ASM_RISCV_PKEYS_DEFINES_H */
+diff --git linux-ariane-v0.7/arch/riscv/include/asm/pkeys.h linux-ariane-v0.7/arch/riscv/include/asm/pkeys.h
+new file mode 100644
+index 000000000000..2e389edd793b
+--- /dev/null
++++ linux-ariane-v0.7/arch/riscv/include/asm/pkeys.h
+@@ -0,0 +1,166 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _ASM_RISCV_PKEYS_H
++#define _ASM_RISCV_PKEYS_H
++
++//#include <asm/mman.h>
++#include <linux/mm.h>
++#include <asm/pkeys-defines.h>
++
++#define ARCH_DEFAULT_PKEY	0
++
++extern bool has_protection_keys;
++
++#define arch_max_pkey() (has_protection_keys ? 1023 : 1)
++
++//extern int __arch_set_user_pkey_access(struct task_struct *tsk, int pkey,
++//		unsigned long init_val);
++
++
++static inline bool arch_pkeys_enabled(void)
++{
++	return has_protection_keys;
++}
++//------------------------------------------------------------------------------
++static inline int arch_set_user_pkey_access(struct task_struct *tsk, int pkey,
++		unsigned long init_val)
++{
++	if (!has_protection_keys)
++		return -EINVAL;
++
++	/*
++	 * why would we even want to set the pkru in the kernel?
++	 * if we're here, then we came from pkey_alloc syscall.
++	 */
++	return 0;
++
++	//return __arch_set_user_pkey_access(tsk, pkey, init_val);
++}
++//------------------------------------------------------------------------------
++
++/*
++ * Try to dedicate one of the protection keys to be used as an
++ * execute-only protection key.
++ */
++extern int __execute_only_pkey(struct mm_struct *mm);
++static inline int execute_only_pkey(struct mm_struct *mm)
++{
++	return ARCH_DEFAULT_PKEY;
++	/*
++	if (!has_protection_keys)
++		return ARCH_DEFAULT_PKEY;
++
++	return __execute_only_pkey(mm);
++	*/
++}
++
++extern int __arch_override_mprotect_pkey(struct vm_area_struct *vma,
++		int prot, int pkey);
++static inline int arch_override_mprotect_pkey(struct vm_area_struct *vma,
++		int prot, int pkey)
++{
++	if (!has_protection_keys)
++		return 0;
++
++	return __arch_override_mprotect_pkey(vma, prot, pkey);
++}
++
++#define mm_pkey_allocated_last(mm)	(mm->context.pkey_allocated_last)
++
++static inline
++bool mm_pkey_is_allocated(struct mm_struct *mm, int pkey)
++{
++	/*
++	 * "Allocated" pkeys are those that have been returned
++	 * from pkey_alloc() or pkey 0 which is allocated
++	 * implicitly when the mm is created.
++	 */
++	if (pkey < 0)
++		return false;
++	if (pkey >= arch_max_pkey())
++		return false;
++	/*
++	 * The exec-only pkey is set in the allocation map, but
++	 * is not available to any of the user interfaces like
++	 * mprotect_pkey().
++	 */
++
++	//special key
++	//if (pkey == 0)
++	//	return false;
++
++	//return mm_pkey_allocation_map(mm) & (1U << pkey);
++	return pkey <= mm_pkey_allocated_last(mm);
++}
++
++/*
++ * Returns a positive, 10-bit key on success, or -1 on failure.
++ */
++static inline
++int mm_pkey_alloc(struct mm_struct *mm)
++{
++	/*
++	 * Note: this is the one and only place we make sure
++	 * that the pkey is valid as far as the hardware is
++	 * concerned.  The rest of the kernel trusts that
++	 * only good, valid pkeys come out of here.
++	 */
++	int ret;
++
++	/*
++	 * Are we out of pkeys?
++	 */
++	if (mm_pkey_allocated_last(mm) == arch_max_pkey() - 1)
++		return -1;
++
++	mm_pkey_allocated_last(mm) += 1;
++	ret = mm_pkey_allocated_last(mm);
++
++	return ret;
++}
++
++static inline
++int mm_pkey_free(struct mm_struct *mm, int pkey)
++{
++	if (!mm_pkey_is_allocated(mm, pkey))
++		return -EINVAL;
++
++	/*
++	For now we can only free the last allocated key
++	*/
++
++	if (pkey != mm_pkey_allocated_last(mm))
++		return -EINVAL;
++
++	mm_pkey_allocated_last(mm) -= 1;
++
++	return 0;
++}
++
++//------------------------------------------------------------------------------
++
++// Pkey <-> VM flags
++
++#define ARCH_VM_PKEY_FLAGS (VM_PKEY_BIT0 | VM_PKEY_BIT1 | VM_PKEY_BIT2 | VM_PKEY_BIT3 | VM_PKEY_BIT4 | VM_PKEY_BIT5 | VM_PKEY_BIT6 | VM_PKEY_BIT7 | VM_PKEY_BIT8 | VM_PKEY_BIT9)
++
++// PKEY TO VMFLAGS
++static inline u64 pkey_to_vmflag_bits(u16 pkey)
++{
++	return (((u64)pkey << VM_PKEY_SHIFT) & ARCH_VM_PKEY_FLAGS);
++}
++
++// VMA to PKEY
++static inline unsigned long vmflags_to_pkey_bits(unsigned long vm_flags)
++{
++	unsigned long ret = (vm_flags & ARCH_VM_PKEY_FLAGS) >> VM_PKEY_SHIFT;
++	//pr_err("vmflags_to_pkey_bits() = %lu", ret);
++	return ret;
++}
++static inline int vma_pkey(struct vm_area_struct *vma)
++{
++	return (int)vmflags_to_pkey_bits(vma->vm_flags);
++}
++
++//------------------------------------------------------------------------------
++
++
++#endif /*_ASM_RISCV_PKEYS_H */
+diff --git linux-ariane-v0.7/arch/riscv/include/asm/processor.h linux-ariane-v0.7/arch/riscv/include/asm/processor.h
+index ce70bceb8872..e057e1399884 100644
+--- linux-ariane-v0.7/arch/riscv/include/asm/processor.h
++++ linux-ariane-v0.7/arch/riscv/include/asm/processor.h
+@@ -40,6 +40,7 @@ struct thread_struct {
+ 	unsigned long sp;	/* Kernel mode stack */
+ 	unsigned long s[12];	/* s[0]: frame pointer */
+ 	struct __riscv_d_ext_state fstate;
++	struct __riscv_n_ext_state nstate;
+ };
+ 
+ #define INIT_THREAD {					\
+diff --git linux-ariane-v0.7/arch/riscv/include/asm/ptrace.h linux-ariane-v0.7/arch/riscv/include/asm/ptrace.h
+index d35ec2f41381..990427e5169a 100644
+--- linux-ariane-v0.7/arch/riscv/include/asm/ptrace.h
++++ linux-ariane-v0.7/arch/riscv/include/asm/ptrace.h
+@@ -56,6 +56,17 @@ struct pt_regs {
+ 	unsigned long sstatus;
+ 	unsigned long sbadaddr;
+ 	unsigned long scause;
++
++	//TODO only if N extension
++	//UIE and UIP are only used when sideleg is set, but we're not using it yet because it's only for interrupts
++	unsigned long ustatus;
++	unsigned long utvec;
++	unsigned long uscratch;
++	unsigned long uepc;
++	unsigned long ucause;
++	unsigned long utval;
++	unsigned long umpk;
++
+ 	/* a0 value before the syscall */
+ 	unsigned long orig_a0;
+ };
+diff --git linux-ariane-v0.7/arch/riscv/include/asm/switch_to.h linux-ariane-v0.7/arch/riscv/include/asm/switch_to.h
+index 733559083f24..daff3499e66a 100644
+--- linux-ariane-v0.7/arch/riscv/include/asm/switch_to.h
++++ linux-ariane-v0.7/arch/riscv/include/asm/switch_to.h
+@@ -64,6 +64,27 @@ extern bool has_fpu;
+ #define __switch_to_aux(__prev, __next) do { } while (0)
+ #endif
+ 
++//TODO only if has_protection_keys or N extension..
++static inline void __switch_to_n_ext(struct task_struct *prev, 
++                                     struct task_struct *next)
++{
++	prev->thread.nstate.utvec    = csr_read(utvec);
++	prev->thread.nstate.uscratch = csr_read(uscratch);
++	prev->thread.nstate.ustatus  = csr_read(ustatus);
++	prev->thread.nstate.uepc     = csr_read(uepc);
++	prev->thread.nstate.ucause   = csr_read(ucause);
++	prev->thread.nstate.utval    = csr_read(utval);
++	prev->thread.nstate.umpk     = csr_read2(CSR_UMPK);
++
++	csr_write(utvec,     next->thread.nstate.utvec);
++	csr_write(uscratch,  next->thread.nstate.uscratch);
++	csr_write(ustatus,   next->thread.nstate.ustatus);
++	csr_write(uepc,      next->thread.nstate.uepc);
++	csr_write(ucause,    next->thread.nstate.ucause);
++	csr_write(utval,     next->thread.nstate.utval);
++	csr_write2(CSR_UMPK, next->thread.nstate.umpk);
++}
++
+ extern struct task_struct *__switch_to(struct task_struct *,
+ 				       struct task_struct *);
+ 
+@@ -73,6 +94,9 @@ do {							\
+ 	struct task_struct *__next = (next);		\
+ 	if (has_fpu)					\
+ 		__switch_to_aux(__prev, __next);	\
++	\
++	__switch_to_n_ext(prev, next); \
++	\
+ 	((last) = __switch_to(__prev, __next));		\
+ } while (0)
+ 
+diff --git linux-ariane-v0.7/arch/riscv/include/uapi/asm/hwcap.h linux-ariane-v0.7/arch/riscv/include/uapi/asm/hwcap.h
+index f333221c9ab2..c42c3b42b065 100644
+--- linux-ariane-v0.7/arch/riscv/include/uapi/asm/hwcap.h
++++ linux-ariane-v0.7/arch/riscv/include/uapi/asm/hwcap.h
+@@ -32,5 +32,6 @@
+ #define COMPAT_HWCAP_ISA_F	(1 << ('F' - 'A'))
+ #define COMPAT_HWCAP_ISA_D	(1 << ('D' - 'A'))
+ #define COMPAT_HWCAP_ISA_C	(1 << ('C' - 'A'))
++#define COMPAT_HWCAP_ISA_N	(1 << ('N' - 'A'))
+ 
+ #endif
+diff --git linux-ariane-v0.7/arch/riscv/include/uapi/asm/mman.h linux-ariane-v0.7/arch/riscv/include/uapi/asm/mman.h
+new file mode 100644
+index 000000000000..472ba243e083
+--- /dev/null
++++ linux-ariane-v0.7/arch/riscv/include/uapi/asm/mman.h
+@@ -0,0 +1,11 @@
++/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
++#ifndef _UAPI__ASM_RISCV_MMAN_H
++#define _UAPI__ASM_RISCV_MMAN_H
++ 
++//#define MAP_32BIT   0x40        /* only give out 32bit addresses */
++ 
++#include <asm-generic/mman-common.h> //maybe
++ 
++#include <asm-generic/mman.h>
++ 
++#endif /* _UAPI__ASM_RISCV_MMAN_H */
+diff --git linux-ariane-v0.7/arch/riscv/include/uapi/asm/ptrace.h linux-ariane-v0.7/arch/riscv/include/uapi/asm/ptrace.h
+index 1a9e4cdd37e2..bf3ca66a2bb2 100644
+--- linux-ariane-v0.7/arch/riscv/include/uapi/asm/ptrace.h
++++ linux-ariane-v0.7/arch/riscv/include/uapi/asm/ptrace.h
+@@ -57,6 +57,18 @@ struct user_regs_struct {
+ 	unsigned long t4;
+ 	unsigned long t5;
+ 	unsigned long t6;
++	//NOTE user_regs_struct must form a prefix of struct pt_regs!
++};
++
++//N-extension registers
++struct __riscv_n_ext_state {
++	unsigned long ustatus;
++	unsigned long utvec;
++	unsigned long uscratch;
++	unsigned long uepc;
++	unsigned long ucause;
++	unsigned long utval;
++	unsigned long umpk;
+ };
+ 
+ struct __riscv_f_ext_state {
+diff --git linux-ariane-v0.7/arch/riscv/kernel/asm-offsets.c linux-ariane-v0.7/arch/riscv/kernel/asm-offsets.c
+index dac98348c6a3..c6f9870afe5b 100644
+--- linux-ariane-v0.7/arch/riscv/kernel/asm-offsets.c
++++ linux-ariane-v0.7/arch/riscv/kernel/asm-offsets.c
+@@ -117,6 +117,14 @@ void asm_offsets(void)
+ 	OFFSET(PT_SBADADDR, pt_regs, sbadaddr);
+ 	OFFSET(PT_SCAUSE, pt_regs, scause);
+ 
++	OFFSET(PT_USTATUS,  pt_regs, ustatus);
++	OFFSET(PT_UTVEC,    pt_regs, utvec);
++	OFFSET(PT_USCRATCH, pt_regs, uscratch);
++	OFFSET(PT_UEPC,     pt_regs, uepc);
++	OFFSET(PT_UCAUSE,   pt_regs, ucause);
++	OFFSET(PT_UTVAL,    pt_regs, utval);
++	OFFSET(PT_UMPK,     pt_regs, umpk);
++
+ 	/*
+ 	 * THREAD_{F,X}* might be larger than a S-type offset can handle, but
+ 	 * these are used in performance-sensitive assembly so we can't resort
+diff --git linux-ariane-v0.7/arch/riscv/kernel/cpufeature.c linux-ariane-v0.7/arch/riscv/kernel/cpufeature.c
+index bc29b010b722..84471bcad710 100644
+--- linux-ariane-v0.7/arch/riscv/kernel/cpufeature.c
++++ linux-ariane-v0.7/arch/riscv/kernel/cpufeature.c
+@@ -27,12 +27,17 @@ unsigned long elf_hwcap __read_mostly;
+ bool has_fpu __read_mostly;
+ #endif
+ 
++#ifdef CONFIG_RISCV_CUSTOM_PROTECTION_KEYS
++bool has_protection_keys __read_mostly;
++#endif
++
+ void riscv_fill_hwcap(void)
+ {
+ 	struct device_node *node;
+ 	const char *isa;
+ 	size_t i;
+ 	static unsigned long isa2hwcap[256] = {0};
++	unsigned long exceptions;
+ 
+ 	isa2hwcap['i'] = isa2hwcap['I'] = COMPAT_HWCAP_ISA_I;
+ 	isa2hwcap['m'] = isa2hwcap['M'] = COMPAT_HWCAP_ISA_M;
+@@ -40,6 +45,7 @@ void riscv_fill_hwcap(void)
+ 	isa2hwcap['f'] = isa2hwcap['F'] = COMPAT_HWCAP_ISA_F;
+ 	isa2hwcap['d'] = isa2hwcap['D'] = COMPAT_HWCAP_ISA_D;
+ 	isa2hwcap['c'] = isa2hwcap['C'] = COMPAT_HWCAP_ISA_C;
++	isa2hwcap['n'] = isa2hwcap['N'] = COMPAT_HWCAP_ISA_N;
+ 
+ 	elf_hwcap = 0;
+ 
+@@ -75,6 +81,24 @@ void riscv_fill_hwcap(void)
+ 		elf_hwcap &= ~COMPAT_HWCAP_ISA_F;
+ 	}
+ 
++	//Check for N extension
++	#ifdef CONFIG_RISCV_CUSTOM_PROTECTION_KEYS
++	if (elf_hwcap & COMPAT_HWCAP_ISA_N || true) {
++		has_protection_keys = true;
++		//delegate exceptions:
++		#define CAUSE_MPKEY_MISMATCH_FAULT 0xe
++		#define CAUSE_ECALL 0x8
++		exceptions = (1U << CAUSE_MPKEY_MISMATCH_FAULT)
++		           | (1U << CAUSE_ECALL);
++		csr_write(sedeleg, exceptions);
++		if (csr_read(sedeleg) != exceptions) {
++			pr_err("Could not write sedeleg\n");
++		}
++	} else {
++		pr_info("No N extension present\n");
++	}
++	#endif
++
+ 	pr_info("elf_hwcap is 0x%lx\n", elf_hwcap);
+ 
+ #ifdef CONFIG_FPU
+diff --git linux-ariane-v0.7/arch/riscv/kernel/entry.S linux-ariane-v0.7/arch/riscv/kernel/entry.S
+index fd9b57c8b4ce..7282b527de2e 100644
+--- linux-ariane-v0.7/arch/riscv/kernel/entry.S
++++ linux-ariane-v0.7/arch/riscv/kernel/entry.S
+@@ -89,6 +89,24 @@ _save_context:
+ 	REG_L s0, TASK_TI_USER_SP(tp)
+ 	csrrc s1, sstatus, t0
+ 	csrr s2, sepc
++
++	//TODO only if N extension
++	//TODO why is this necessary here? shouldnt this be handled the same way-ish as floating point register?
++	csrr s3, utvec
++	csrr s4, uscratch
++	csrr s5, CSR_UMPK
++	REG_S s3, PT_UTVEC(sp)
++	REG_S s4, PT_USCRATCH(sp)
++	REG_S s5, PT_UMPK(sp)
++	csrr s3, ustatus
++	csrr s5, uepc
++	REG_S s3, PT_USTATUS(sp)
++	REG_S s5, PT_UEPC(sp)
++	csrr s3, ucause
++	csrr s4, utval
++	REG_S s3, PT_UCAUSE(sp)
++	REG_S s4, PT_UTVAL(sp)
++
+ 	csrr s3, sbadaddr
+ 	csrr s4, scause
+ 	csrr s5, sscratch
+@@ -98,6 +116,7 @@ _save_context:
+ 	REG_S s3, PT_SBADADDR(sp)
+ 	REG_S s4, PT_SCAUSE(sp)
+ 	REG_S s5, PT_TP(sp)
++
+ 	.endm
+ 
+ /*
+@@ -110,6 +129,22 @@ _save_context:
+ 	csrw sstatus, a0
+ 	csrw sepc, a2
+ 
++	//TODO only if N extension
++	REG_L x5, PT_UTVEC(sp)
++	REG_L x6, PT_USCRATCH(sp)
++	REG_L x7, PT_UMPK(sp)
++	csrw utvec,    x5
++	csrw uscratch, x6
++	csrw CSR_UMPK, x7
++	REG_L x5, PT_USTATUS(sp)
++	REG_L x7, PT_UEPC(sp)
++	csrw ustatus,  x5
++	csrw uepc,     x7
++	REG_L x5, PT_UCAUSE(sp)
++	REG_L x6, PT_UTVAL(sp)
++	csrw ucause,   x5
++	csrw utval,    x6
++
+ 	REG_L x1,  PT_RA(sp)
+ 	REG_L x3,  PT_GP(sp)
+ 	REG_L x4,  PT_TP(sp)
+@@ -330,6 +365,7 @@ ENTRY(__switch_to)
+ 	add   a3, a0, a4
+ 	add   a4, a1, a4
+ 	REG_S ra,  TASK_THREAD_RA_RA(a3)
++	/* Note: sp, s0-s11 are callee-saved registers */
+ 	REG_S sp,  TASK_THREAD_SP_RA(a3)
+ 	REG_S s0,  TASK_THREAD_S0_RA(a3)
+ 	REG_S s1,  TASK_THREAD_S1_RA(a3)
+diff --git linux-ariane-v0.7/arch/riscv/kernel/process.c linux-ariane-v0.7/arch/riscv/kernel/process.c
+index bef19993ea92..b1cefbb3ff33 100644
+--- linux-ariane-v0.7/arch/riscv/kernel/process.c
++++ linux-ariane-v0.7/arch/riscv/kernel/process.c
+@@ -33,9 +33,14 @@
+ #include <asm/string.h>
+ #include <asm/switch_to.h>
+ 
++#include <linux/pkeys.h>
++
+ extern asmlinkage void ret_from_fork(void);
+ extern asmlinkage void ret_from_kernel_thread(void);
+ 
++extern void write_init_pkru(void);
++extern u64 get_init_pkru(void);
++
+ void arch_cpu_idle(void)
+ {
+ 	wait_for_interrupt();
+@@ -82,6 +87,18 @@ void start_thread(struct pt_regs *regs, unsigned long pc,
+ 	regs->sepc = pc;
+ 	regs->sp = sp;
+ 	set_fs(USER_DS);
++
++	//TODO only if N extension
++	// Reset N extension "registers
++	regs->utvec     = 0;
++	regs->uscratch  = 0;
++	regs->umpk      = get_init_pkru();
++	regs->ustatus   = 0;
++	//regs->uie       = 0;
++	regs->uepc      = 0;
++	regs->ucause    = 0;
++	regs->utval     = 0;
++	//regs->uip       = 0;
+ }
+ 
+ void flush_thread(void)
+@@ -94,11 +111,17 @@ void flush_thread(void)
+ 	 */
+ 	memset(&current->thread.fstate, 0, sizeof(current->thread.fstate));
+ #endif
++	//TODO if N or arch_pkeys_enabled ?
++	// Reset N extension stuff
++	memset(&current->thread.nstate, 0, sizeof(current->thread.nstate));
++	write_init_pkru();
++	current->thread.nstate.umpk = get_init_pkru();
+ }
+ 
+ int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
+ {
+ 	fstate_save(src, task_pt_regs(src));
++	//TODO do i need nstate save?
+ 	*dst = *src;
+ 	return 0;
+ }
+@@ -129,5 +152,6 @@ int copy_thread(unsigned long clone_flags, unsigned long usp,
+ 		p->thread.ra = (unsigned long)ret_from_fork;
+ 	}
+ 	p->thread.sp = (unsigned long)childregs; /* kernel sp */
++	//kernel stack can grow down (below pt_regs)
+ 	return 0;
+ }
+diff --git linux-ariane-v0.7/arch/riscv/mm/Makefile linux-ariane-v0.7/arch/riscv/mm/Makefile
+index b68aac701803..821287395f0f 100644
+--- linux-ariane-v0.7/arch/riscv/mm/Makefile
++++ linux-ariane-v0.7/arch/riscv/mm/Makefile
+@@ -9,3 +9,5 @@ obj-y += fault.o
+ obj-y += extable.o
+ obj-y += ioremap.o
+ obj-y += cacheflush.o
++
++obj-$(CONFIG_RISCV_CUSTOM_PROTECTION_KEYS)	+= pkeys.o
+diff --git linux-ariane-v0.7/arch/riscv/mm/cacheflush.c linux-ariane-v0.7/arch/riscv/mm/cacheflush.c
+index 498c0a0814fe..9effe4e7bfb3 100644
+--- linux-ariane-v0.7/arch/riscv/mm/cacheflush.c
++++ linux-ariane-v0.7/arch/riscv/mm/cacheflush.c
+@@ -19,5 +19,5 @@ void flush_icache_pte(pte_t pte)
+ 	struct page *page = pte_page(pte);
+ 
+ 	if (!test_and_set_bit(PG_dcache_clean, &page->flags))
+-		flush_icache_all();
++		flush_icache_all();	
+ }
+diff --git linux-ariane-v0.7/arch/riscv/mm/pkeys.c linux-ariane-v0.7/arch/riscv/mm/pkeys.c
+new file mode 100644
+index 000000000000..04a0e1f15fd5
+--- /dev/null
++++ linux-ariane-v0.7/arch/riscv/mm/pkeys.c
+@@ -0,0 +1,48 @@
++#include <asm/mman.h>
++
++#include <linux/debugfs.h>		/* debugfs_create_u32()		*/
++#include <linux/mm_types.h>             /* mm_struct, vma, etc...       */
++#include <linux/pkeys.h>                /* PKEY_*                       */
++#include <uapi/asm-generic/mman-common.h>
++
++//#include <asm/cpufeature.h>             /* boot_cpu_has, ...            */
++#include <asm/mmu_context.h>            /* vma_pkey()                   */
++
++#include <asm/pgtable.h> /* read_pkru(), write_pkru() */
++
++/*
++ * This is only called for *plain* mprotect calls.
++ */
++//TODO rethink exec-only thing
++int __arch_override_mprotect_pkey(struct vm_area_struct *vma, int prot, int pkey)
++{
++	/*
++	 * Is this an mprotect_pkey() call?  If so, never
++	 * override the value that came from the user.
++	 */
++	if (pkey != -1)
++		return pkey;
++
++	/*
++	 * This is a vanilla, non-pkey mprotect (or we failed to
++	 * setup execute-only), inherit the pkey from the VMA we
++	 * are working on.
++	 */
++	return vma_pkey(vma);
++}
++
++pkru_t init_pkru_value = {.mode = 1};
++//TODO init for new threads must be {.mode = 0}
++
++/*
++ * Create fresh register(s)
++ */
++u64 get_init_pkru(void)
++{
++	pkru_t init_pkru_value_snapshot = READ_ONCE(init_pkru_value);
++	return PKRU_TO_INT(init_pkru_value_snapshot);
++}
++void write_init_pkru(void)
++{
++	write_pkru(get_init_pkru());
++}
+diff --git linux-ariane-v0.7/fs/proc/task_mmu.c linux-ariane-v0.7/fs/proc/task_mmu.c
+index 95ca1fe7283c..573d5dd3c47a 100644
+--- linux-ariane-v0.7/fs/proc/task_mmu.c
++++ linux-ariane-v0.7/fs/proc/task_mmu.c
+@@ -660,6 +660,13 @@ static void show_smap_vma_flags(struct seq_file *m, struct vm_area_struct *vma)
+ #if VM_PKEY_BIT4
+ 		[ilog2(VM_PKEY_BIT4)]	= "",
+ #endif
++#if VM_PKEY_BIT5 && VM_PKEY_BIT6 && VM_PKEY_BIT7 && VM_PKEY_BIT8 && VM_PKEY_BIT9
++		[ilog2(VM_PKEY_BIT5)]	= "",
++		[ilog2(VM_PKEY_BIT6)]	= "",
++		[ilog2(VM_PKEY_BIT7)]	= "",
++		[ilog2(VM_PKEY_BIT8)]	= "",
++		[ilog2(VM_PKEY_BIT9)]	= "",
++#endif
+ #endif /* CONFIG_ARCH_HAS_PKEYS */
+ 	};
+ 	size_t i;
+diff --git linux-ariane-v0.7/include/linux/mm.h linux-ariane-v0.7/include/linux/mm.h
+index 6b10c21630f5..891a3047f20f 100644
+--- linux-ariane-v0.7/include/linux/mm.h
++++ linux-ariane-v0.7/include/linux/mm.h
+@@ -6,6 +6,7 @@
+ 
+ #ifdef __KERNEL__
+ 
++#include <linux/kconfig.h>
+ #include <linux/mmdebug.h>
+ #include <linux/gfp.h>
+ #include <linux/bug.h>
+@@ -252,14 +253,25 @@ extern unsigned int kobjsize(const void *objp);
+ #define VM_HIGH_ARCH_BIT_2	34	/* bit only usable on 64-bit architectures */
+ #define VM_HIGH_ARCH_BIT_3	35	/* bit only usable on 64-bit architectures */
+ #define VM_HIGH_ARCH_BIT_4	36	/* bit only usable on 64-bit architectures */
++#define VM_HIGH_ARCH_BIT_5	37	/* bit only usable on 64-bit architectures */
++#define VM_HIGH_ARCH_BIT_6	38	/* bit only usable on 64-bit architectures */
++#define VM_HIGH_ARCH_BIT_7	39	/* bit only usable on 64-bit architectures */
++#define VM_HIGH_ARCH_BIT_8	40	/* bit only usable on 64-bit architectures */
++#define VM_HIGH_ARCH_BIT_9	41	/* bit only usable on 64-bit architectures */
+ #define VM_HIGH_ARCH_0	BIT(VM_HIGH_ARCH_BIT_0)
+ #define VM_HIGH_ARCH_1	BIT(VM_HIGH_ARCH_BIT_1)
+ #define VM_HIGH_ARCH_2	BIT(VM_HIGH_ARCH_BIT_2)
+ #define VM_HIGH_ARCH_3	BIT(VM_HIGH_ARCH_BIT_3)
+ #define VM_HIGH_ARCH_4	BIT(VM_HIGH_ARCH_BIT_4)
++#define VM_HIGH_ARCH_5	BIT(VM_HIGH_ARCH_BIT_5)
++#define VM_HIGH_ARCH_6	BIT(VM_HIGH_ARCH_BIT_6)
++#define VM_HIGH_ARCH_7	BIT(VM_HIGH_ARCH_BIT_7)
++#define VM_HIGH_ARCH_8	BIT(VM_HIGH_ARCH_BIT_8)
++#define VM_HIGH_ARCH_9	BIT(VM_HIGH_ARCH_BIT_9)
+ #endif /* CONFIG_ARCH_USES_HIGH_VMA_FLAGS */
+ 
+ #ifdef CONFIG_ARCH_HAS_PKEYS
++//Note: VM_HIGH_ARCH_BIT_0 is an arbitrary (unused) number >= 32 for vm_area_struct->vm_flags (mm_types.h)
+ # define VM_PKEY_SHIFT	VM_HIGH_ARCH_BIT_0
+ # define VM_PKEY_BIT0	VM_HIGH_ARCH_0	/* A protection key is a 4-bit value */
+ # define VM_PKEY_BIT1	VM_HIGH_ARCH_1	/* on x86 and 5-bit value on ppc64   */
+@@ -267,8 +279,20 @@ extern unsigned int kobjsize(const void *objp);
+ # define VM_PKEY_BIT3	VM_HIGH_ARCH_3
+ #ifdef CONFIG_PPC
+ # define VM_PKEY_BIT4  VM_HIGH_ARCH_4
++#elif CONFIG_RISCV_CUSTOM_PROTECTION_KEYS
++# define VM_PKEY_BIT4  VM_HIGH_ARCH_4
++# define VM_PKEY_BIT5  VM_HIGH_ARCH_5
++# define VM_PKEY_BIT6  VM_HIGH_ARCH_6
++# define VM_PKEY_BIT7  VM_HIGH_ARCH_7
++# define VM_PKEY_BIT8  VM_HIGH_ARCH_8
++# define VM_PKEY_BIT9  VM_HIGH_ARCH_9
+ #else
+ # define VM_PKEY_BIT4  0
++# define VM_PKEY_BIT5  0
++# define VM_PKEY_BIT6  0
++# define VM_PKEY_BIT7  0
++# define VM_PKEY_BIT8  0
++# define VM_PKEY_BIT9  0
+ #endif
+ #endif /* CONFIG_ARCH_HAS_PKEYS */
+ 
